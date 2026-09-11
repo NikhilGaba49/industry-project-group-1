@@ -217,4 +217,4 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-view_data.pyrea_data/
+rea_data/

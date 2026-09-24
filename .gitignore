@@ -218,3 +218,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 rea_data/
+
+notebooks/External_Features_Processing/ors_cache_driving-car/
+
+notebooks/External_Features_Processing/ors_cache_driving-car_k50/

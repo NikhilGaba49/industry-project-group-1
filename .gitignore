@@ -218,3 +218,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 rea_data/external_data/*.xlsx
+.DS_Store
+rea_data/

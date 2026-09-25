@@ -217,4 +217,4 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-rea_data/
+rea_data/external_data/*.xlsx

@@ -12,9 +12,11 @@ macOS only.
 """
 
 import json
+import logging
 import random
 import re
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,9 +26,18 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.domain.com.au"
 OUT_PATH = Path("data") / "listings.parquet"
+LOG_PATH = Path("logs") / "scrape_domain.log"
 
 MAX_PAGES_PER_SUBURB = 20
 MIN_DELAY, MAX_DELAY = 2.0, 5.0
+
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+    handlers=[logging.FileHandler(LOG_PATH, mode="a"), logging.StreamHandler(sys.stdout)],
+)
+log = logging.getLogger(__name__)
 
 SUBURB_TEXT = (
     # Melbourne CBD & inner
@@ -210,13 +221,24 @@ ADDR_RE = re.compile(r"^(.*?),\s*([A-Za-z .'-]+)\s+VIC\s+(\d{4})$", re.I)
 LAT_LNG_RE = re.compile(r"center=(-?\d+\.\d+),(-?\d+\.\d+)")
 
 
+BLOCK_MARKERS = ("access denied", "you don't have permission to access")
+BLOCK_WAIT_BASE = 60.0
+BLOCK_WAIT_MAX = 900.0
+BLOCK_MAX_RETRIES = 10
+
+
 def osa(script):
     return subprocess.run(
         ["osascript", "-e", script], capture_output=True, text=True, check=True,
     ).stdout.rstrip("\n")
 
 
-def fetch(url):
+def is_blocked_page(html):
+    lower = html.lower()
+    return any(marker in lower for marker in BLOCK_MARKERS)
+
+
+def _fetch_once(url):
     """Navigate the shared Chrome window and return rendered HTML, or None.
     Domain is a client-rendered React app, so readyState fires before the
     listing content has hydrated -- hence the settle wait after it."""
@@ -224,7 +246,7 @@ def fetch(url):
     try:
         osa(f'tell application "Google Chrome" to set URL of active tab of front window to "{safe_url}"')
     except subprocess.CalledProcessError as e:
-        print(f"  fetch failed for {url}: {e.stderr.strip()}")
+        log.warning(f"  fetch failed for {url}: {e.stderr.strip()}")
         return None
 
     deadline = time.time() + 20
@@ -248,8 +270,33 @@ def fetch(url):
             'front window javascript "document.documentElement.outerHTML"'
         )
     except subprocess.CalledProcessError as e:
-        print(f"  fetch failed for {url}: {e.stderr.strip()}")
+        log.warning(f"  fetch failed for {url}: {e.stderr.strip()}")
         return None
+
+
+def fetch(url):
+    """Fetch url, and if Domain's WAF returns an Access Denied page, back off
+    and retry the same url (with growing wait times) instead of giving up on
+    it. Only returns None if the page is unreachable for a non-block reason,
+    or still blocked after BLOCK_MAX_RETRIES attempts."""
+    attempt = 0
+    while True:
+        html = _fetch_once(url)
+        if html is None or not is_blocked_page(html):
+            return html
+
+        attempt += 1
+        if attempt > BLOCK_MAX_RETRIES:
+            log.warning(f"  still blocked (access denied) after {BLOCK_MAX_RETRIES} retries, giving up on {url}")
+            return None
+
+        wait = min(BLOCK_WAIT_BASE * (2 ** (attempt - 1)), BLOCK_WAIT_MAX)
+        wait += random.uniform(0, wait * 0.2)
+        log.warning(
+            f"  blocked (access denied) fetching {url}, "
+            f"waiting {wait:.0f}s before retry {attempt}/{BLOCK_MAX_RETRIES}"
+        )
+        time.sleep(wait)
 
 
 def text_of(soup, testid):
@@ -295,8 +342,8 @@ time.sleep(1)
 
 listings = {}
 
-for name, postcode in SUBURBS:
-    print(f"Suburb: {name} ({postcode})")
+for suburb_index, (name, postcode) in enumerate(SUBURBS, 1):
+    log.info(f"Suburb start [{suburb_index}/{len(SUBURBS)}]: {name} ({postcode})")
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     found = {}
     previous_ids = set()
@@ -326,13 +373,15 @@ for name, postcode in SUBURBS:
             break
         previous_ids = set(page_links)
         found.update(page_links)
-        print(f"  {name} ({postcode}) page {page}: {len(found)} listings so far")
+        log.info(f"  {name} ({postcode}) page {page}: {len(found)} listings so far")
 
     for listing_id, href in found.items():
         listings.setdefault(listing_id, (href, name, postcode))
 
+    log.info(f"Suburb done [{suburb_index}/{len(SUBURBS)}]: {name} ({postcode}) - {len(found)} listings found")
+
 listings = dict(list(listings.items())[:MAX_LISTINGS]) if MAX_LISTINGS else listings
-print(f"\n{len(listings)} unique listings to scrape\n")
+log.info(f"{len(listings)} unique listings to scrape")
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +393,7 @@ rows = []
 for i, (listing_id, (url, search_suburb, search_postcode)) in enumerate(listings.items(), 1):
     html = fetch(url)
     if html is None:
-        print(f"[{i}/{len(listings)}] failed to fetch {listing_id}, skipping")
+        log.warning(f"[{i}/{len(listings)}] failed to fetch {listing_id}, skipping")
         continue
 
     warnings = []
@@ -590,10 +639,10 @@ for i, (listing_id, (url, search_suburb, search_postcode)) in enumerate(listings
         "agency_name": agency_name, "agent_names": agent_names,
         "num_photos": num_photos, "has_floorplan": bool(has_floorplan),
     })
-    print(f"[{i}/{len(listings)}] parsed {listing_id} (warnings: {rows[-1]['parse_warnings'] or 'none'})")
+    log.info(f"[{i}/{len(listings)}] parsed {listing_id} (warnings: {rows[-1]['parse_warnings'] or 'none'})")
 
     if i % 20 == 0:
         pd.DataFrame(rows, columns=LISTING_COLUMNS).to_parquet(OUT_PATH, index=False)
 
 pd.DataFrame(rows, columns=LISTING_COLUMNS).to_parquet(OUT_PATH, index=False)
-print(f"\nDone: {len(rows)} listings written to {OUT_PATH}")
+log.info(f"Done: {len(rows)} listings written to {OUT_PATH}")

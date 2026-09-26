@@ -217,5 +217,13 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-view_data.py
-/data
+rea_data/
+
+notebooks/External_Features_Processing/ors_cache_driving-car/
+
+notebooks/External_Features_Processing/ors_cache_driving-car_k50/
+
+external_data/parks/
+
+notebooks/External_Features_Processing/proximity_results
+.DS_Store

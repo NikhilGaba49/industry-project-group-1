@@ -1,0 +1,513 @@
+---
+title: "Weekly_Rent_Explanatory_Model"
+author: "Jovi Nguyen"
+date: "2026-09-30"
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Project set up
+
+```{r packages}
+# JOVI's R-version 4.6.1 (2026-06-24)
+library(here)        # project-root file paths
+library(tidyverse)   # dplyr, ggplot2, readr, forcats, etc.
+library(skimr)       # quick data summaries
+library(GGally)      # pairwise plots
+library(car)         # vif() and Anova() for collinearity / importance
+library(broom)       # tidy model output
+library(performance) # model diagnostics
+library(leaps)       # best-subset check for stepwise (not used yet)
+library(glmnet)      # LASSO model (section 6.1)
+library(nanoparquet) # Reading parquet files
+```
+
+```{r load-data}
+INPUT_PATH <- "../rea_data/curated/rentals.parquet"
+rentals <- nanoparquet::read_parquet(INPUT_PATH)
+skimr::skim(rentals)
+```
+
+## 2. Cleaning
+
+### 2.1 Duplicates
+
+```{r duplicates}
+sum(duplicated(rentals))
+
+n_before <- nrow(rentals)
+rentals <- rentals |> distinct()
+
+sum(duplicated(rentals))   # should now be 0
+n_before - nrow(rentals)   # rows removed
+nrow(rentals)
+```
+
+### 2.2 Response variable
+
+```{r response-hist}
+ggplot(rentals, aes(weekly_rent)) + geom_histogram(bins = 50)
+ggplot(rentals, aes(log(weekly_rent))) + geom_histogram(bins = 50)
+```
+
+### 2.3 Listing years
+
+Listings from all years are kept. `listed_year` stays in the data as a predictor
+(a time control) instead of being filtered to 2025 only.
+
+```{r listing-years}
+rentals |>
+  count(listed_year) |>
+  mutate(pct = round(100 * n / sum(n), 1))
+```
+
+### 2.4 Manual grouping of structural features
+
+Near-duplicate feature flags are merged into one "any" flag with `pmax()`.
+
+```{r merge-features}
+rentals <- rentals |>
+  mutate(
+    feat_aircon_any    = pmax(feat_air_conditioning, feat_air_conditioner,
+                              feat_split_system_air_conditioning),
+    feat_heating_any   = pmax(feat_heating, feat_split_system_heating,
+                              feat_ducted_heating, feat_gas_heating),
+    feat_broadband_any = pmax(feat_broadband, feat_broadband_internet_access,
+                              feat_broadband_internet_available),
+    feat_ensuite_any   = pmax(feat_ensuite, feat_ensuites),
+    feat_balcony_any   = pmax(feat_balcony, feat_balcony___deck, feat_deck),
+    feat_courtyard_any = pmax(feat_courtyard, feat_garden___courtyard),
+    feat_laundry_any   = pmax(feat_laundry, feat_internal_laundry),
+    feat_bath_any      = pmax(feat_bath, feat_bathtub)
+  ) |>
+  select(-c(feat_air_conditioning, feat_air_conditioner, feat_split_system_air_conditioning,
+            feat_heating, feat_split_system_heating, feat_ducted_heating, feat_gas_heating,
+            feat_broadband, feat_broadband_internet_access, feat_broadband_internet_available,
+            feat_ensuite, feat_ensuites,
+            feat_balcony, feat_balcony___deck, feat_deck,
+            feat_courtyard, feat_garden___courtyard,
+            feat_laundry, feat_internal_laundry,
+            feat_bath, feat_bathtub))
+
+# Check average appearance of the merged features
+rentals |> select(ends_with("_any")) |> colMeans() |> round(3)
+```
+
+```{r feature-prevalence}
+rentals |>
+  select(starts_with("feat_")) |>
+  colMeans() |>
+  round(3) |>
+  sort(decreasing = TRUE)
+```
+
+### 2.5 Transformations and factors
+
+```{r transformations}
+# Log transformations
+rentals <- rentals |> mutate(log_park_reserve_dist = log(park_reserve_road_distance_m))
+rentals <- rentals |> mutate(log_weekly_rent = log(weekly_rent))
+
+# Factorize categorical columns (2025 is the reference year)
+rentals <- rentals |>
+  mutate(property_type = factor(property_type),
+         listed_month  = factor(listed_month),
+         listed_year   = fct_relevel(factor(listed_year), "2025"))
+
+count(rentals, property_type)
+count(rentals, listed_year)
+
+```
+
+### 2.6 High-rent listings (kept aside)
+
+Listings with `weekly_rent` more than 2 standard deviations above the mean are
+saved in a separate dataframe, `high_rent`, to look at later in the project.
+This is a copy only: these rows are **not** removed from `rentals`, so the
+models below are still fitted on them. It is taken before the columns are
+dropped in 2.7, so it keeps `weekly_rent`, `suburb`, `lon`, `lat` and the
+other raw columns.
+
+```{r high-rent}
+rent_mean <- mean(rentals$weekly_rent)
+rent_sd   <- sd(rentals$weekly_rent)
+rent_cut  <- rent_mean + 2 * rent_sd
+
+high_rent <- rentals |> filter(weekly_rent > rent_cut)
+
+c(mean = rent_mean, sd = rent_sd, cutoff = rent_cut)
+nrow(high_rent)
+round(100 * nrow(high_rent) / nrow(rentals), 2)   # % of all listings
+summary(high_rent$weekly_rent)
+```
+
+### Group by year post and pre covid
+```{r}
+rentals <- rentals |>
+  mutate(
+    yr = as.integer(as.character(listed_year)),
+    year_group = case_when(
+      yr == 2025 ~ "2025",
+      yr >= 2020 ~ "Post-covid",   # 2020-2024
+      yr <= 2019 ~ "Pre-covid"
+    ),
+    year_group = factor(year_group, levels = c("2025", "Post-covid", "Pre-covid"))
+  ) |>
+  select(-yr)
+
+rentals |>
+  count(year_group) |>
+  mutate(pct = round(100 * n / sum(n), 1))
+```
+
+### 2.7 Drop columns not used as predictors
+
+```{r drop-columns}
+# Removed to avoid problems in the model:
+#  - weekly_rent: the raw response (would leak the answer into the predictors)
+#  - park_reserve_road_distance_m: replaced by log_park_reserve_dist
+#  - lon, lat: location is captured by distance and area variables
+#  - suburb: 600+ levels; date_listed: the exact date is captured by
+#    listed_year and listed_month
+# listed_year is kept as a predictor now that all years are included.
+rentals <- rentals |>
+  select(-c(lon, lat, suburb, date_listed, listed_year,
+            weekly_rent, park_reserve_road_distance_m))
+```
+
+### 2.8 Group uncommon property types
+
+```{r lump-property-types}
+rentals <- rentals |>
+  mutate(property_type = fct_lump_min(property_type, min = 10, other_level = "Other"),
+         property_type = fct_relevel(property_type, "House"))
+
+rentals |>
+  count(property_type, sort = TRUE) |>
+  mutate(pct = round(100 * n / sum(n), 1)) |>
+  print(n = Inf)
+```
+
+### 2.9 Final checks before modelling
+
+```{r final-checks}
+stopifnot(!any(c("weekly_rent", "park_reserve_road_distance_m", "listed_year",
+                 "date_listed", "lat", "lon", "suburb") %in% names(rentals)))
+stopifnot("year_group" %in% names(rentals))   # kept as a predictor
+
+anyNA(rentals)
+str(rentals, list.len = 10)
+sapply(select(rentals, where(is.factor)), nlevels)
+skimr::skim(rentals)
+```
+
+## 3. Train / test split
+
+```{r split}
+set.seed(123)
+idx   <- sample(nrow(rentals), 0.8 * nrow(rentals))
+train <- rentals[idx, ]
+test  <- rentals[-idx, ]
+
+# Keep only factor levels that exist in train, and make test use the same levels
+train <- droplevels(train)
+for (v in names(select(train, where(is.factor)))) {
+  test[[v]] <- factor(test[[v]], levels = levels(train[[v]]))
+}
+
+# Drop any test rows with a level never seen in train (predict() would fail)
+n_test_before <- nrow(test)
+test <- test |> filter(if_all(where(is.factor), ~ !is.na(.x)))
+n_test_before - nrow(test)   # test rows removed (ideally 0)
+
+c(train = nrow(train), test = nrow(test))
+```
+
+## 4. Standardize continuous predictors
+
+Continuous predictors are standardized using the **training** means and SDs
+(applied to test as well). Binary `feat_*` flags, factors and the response are
+left unscaled. In the plots below, continuous coefficients are therefore
+"per +1 SD", binary flags are "yes vs. no", and factors are "vs. reference level".
+
+```{r standardize}
+num_cols <- train |>
+  select(where(is.numeric), -starts_with("feat_"), -log_weekly_rent) |>
+  names()
+
+mu  <- colMeans(train[num_cols])
+sdv <- sapply(train[num_cols], sd)
+
+train[num_cols] <- scale(train[num_cols], center = mu, scale = sdv)
+test[num_cols]  <- scale(test[num_cols],  center = mu, scale = sdv)
+```
+
+## 5. Collinearity
+
+```{r vif}
+predictors <- setdiff(names(train), "log_weekly_rent")
+full <- lm(reformulate(predictors, "log_weekly_rent"), data = train)
+
+performance::check_collinearity(full) |>
+  as_tibble() |>
+  arrange(desc(VIF)) |>
+  print(n = 20)
+```
+
+## 6. Fitting the models
+
+```{r stepwise}
+null <- lm(log_weekly_rent ~ 1, data = train)
+
+# k = log(n) gives BIC; the default k = 2 gives AIC
+step_bic <- step(null, scope = list(lower = null, upper = full),
+                 direction = "both", k = log(nrow(train)), trace = 0)
+step_aic <- step(null, scope = list(lower = null, upper = full),
+                 direction = "both", trace = 0)
+```
+
+### 6.1 LASSO
+
+The LASSO is fitted on the same training data and predictors as the full and
+stepwise models. `glmnet` needs a numeric matrix, so factors are expanded into
+dummy columns with `model.matrix()`. The penalty (lambda) is chosen by 10-fold
+cross-validation on the training set only. Two choices are compared:
+`lambda.min` (lowest CV error) and `lambda.1se` (the sparsest model within one
+standard error of the lowest).
+
+```{r lasso}
+lasso_formula <- reformulate(predictors)
+x_train <- model.matrix(lasso_formula, data = train)[, -1]   # drop intercept column
+x_test  <- model.matrix(lasso_formula, data = test)[, -1]
+y_train <- train$log_weekly_rent
+
+stopifnot(identical(colnames(x_train), colnames(x_test)))
+
+set.seed(123)   # fixes the CV folds
+cv_lasso <- cv.glmnet(x_train, y_train, alpha = 1, nfolds = 10)
+
+c(lambda_min = cv_lasso$lambda.min, lambda_1se = cv_lasso$lambda.1se)
+```
+
+```{r lasso-cv-plot, fig.width=8, fig.height=5}
+plot(cv_lasso)
+```
+
+```{r lasso-coefs}
+# Number of non-zero coefficients (including the intercept, to match lm())
+lasso_n_coefs <- function(s) sum(as.matrix(coef(cv_lasso, s = s)) != 0)
+c(lambda_min = lasso_n_coefs("lambda.min"), lambda_1se = lasso_n_coefs("lambda.1se"))
+
+# Largest retained coefficients at lambda.min
+b_min <- as.matrix(coef(cv_lasso, s = "lambda.min"))
+tibble(term = rownames(b_min), estimate = b_min[, 1]) |>
+  filter(estimate != 0, term != "(Intercept)") |>
+  arrange(desc(abs(estimate))) |>
+  mutate(estimate = round(estimate, 4)) |>
+  print(n = 25)
+```
+
+### 6.2 Diagnostics
+
+```{r diagnostics-bic, fig.width=9, fig.height=8}
+par(mfrow = c(2, 2), oma = c(0, 0, 2, 0))
+plot(step_bic, sub.caption = "Diagnostics: Stepwise BIC model")
+par(mfrow = c(1, 1), oma = c(0, 0, 0, 0))
+```
+
+```{r diagnostics-aic, fig.width=9, fig.height=8}
+par(mfrow = c(2, 2), oma = c(0, 0, 2, 0))
+plot(step_aic, sub.caption = "Diagnostics: Stepwise AIC model")
+par(mfrow = c(1, 1), oma = c(0, 0, 0, 0))
+```
+```{r}
+lasso_diagnostics <- function(s, label) {
+  fitted_v <- as.numeric(predict(cv_lasso, newx = x_train, s = s))
+  res      <- y_train - fitted_v
+  std_res  <- res / sd(res)
+
+  par(mfrow = c(2, 2), oma = c(0, 0, 2, 0))
+
+  # 1. Residuals vs fitted
+  plot(fitted_v, res, xlab = "Fitted values", ylab = "Residuals",
+       main = "Residuals vs Fitted")
+  abline(h = 0, lty = 2)
+  lines(lowess(fitted_v, res), col = "red")
+
+  # 2. Normal Q-Q
+  qqnorm(std_res, main = "Normal Q-Q")
+  qqline(std_res, lty = 2)
+
+  # 3. Scale-location
+  plot(fitted_v, sqrt(abs(std_res)), xlab = "Fitted values",
+       ylab = expression(sqrt("|Standardized residuals|")),
+       main = "Scale-Location")
+  lines(lowess(fitted_v, sqrt(abs(std_res))), col = "red")
+
+  # 4. Observed vs fitted (replaces residuals vs leverage)
+  plot(fitted_v, y_train, xlab = "Fitted values", ylab = "Observed log rent",
+       main = "Observed vs Fitted")
+  abline(0, 1, lty = 2, col = "red")
+
+  mtext(label, outer = TRUE, font = 2)
+  par(mfrow = c(1, 1), oma = c(0, 0, 0, 0))
+}
+
+```
+
+```{r diagnostics-lasso-min, fig.width=9, fig.height=8}
+lasso_diagnostics("lambda.min", "LASSO (lambda.min)")
+```
+
+```{r diagnostics-lasso-1se, fig.width=9, fig.height=8}
+lasso_diagnostics("lambda.1se", "LASSO (lambda.1se)")
+```
+
+### 6.3 Test-set performance
+
+```{r performance}
+rmse_fun <- function(pred) sqrt(mean((test$log_weekly_rent - pred)^2))
+
+r2_fun <- function(pred) {
+  # out-of-sample R-squared, baseline = mean of the training response
+  1 - sum((test$log_weekly_rent - pred)^2) /
+      sum((test$log_weekly_rent - mean(train$log_weekly_rent))^2)
+}
+
+test_preds <- list(
+  "Stepwise BIC"       = predict(step_bic, test),
+  "Stepwise AIC"       = predict(step_aic, test),
+  "Full"               = predict(full, test),
+  "LASSO (lambda.min)" = as.numeric(predict(cv_lasso, newx = x_test, s = "lambda.min")),
+  "LASSO (lambda.1se)" = as.numeric(predict(cv_lasso, newx = x_test, s = "lambda.1se"))
+)
+
+model_compare <- tibble(
+  model     = names(test_preds),
+  n_coefs   = c(length(coef(step_bic)), length(coef(step_aic)), length(coef(full)),
+                lasso_n_coefs("lambda.min"), lasso_n_coefs("lambda.1se")),
+  test_rmse = map_dbl(test_preds, rmse_fun),
+  test_r2   = map_dbl(test_preds, r2_fun)
+)
+model_compare |> mutate(across(where(is.numeric), ~ round(.x, 4)))
+```
+
+## 7. Which features matter most?
+
+Features are grouped into **internal** (the property itself: type, bedrooms,
+bathrooms, car spaces, and the `feat_*` flags) and **external** (location and
+area: distances, crime, income, population). `listed_month` and `listed_year`
+are treated as time controls.
+
+```{r term-groups}
+internal_pat <- "^feat_|^log_(bedrooms|bathrooms|carspaces)$|^property_type"
+
+classify_term <- function(x) {
+  case_when(
+    str_detect(x, internal_pat)           ~ "Internal (property)",
+    str_detect(x, "^listed_(month|year)") ~ "Time control",
+    TRUE                                  ~ "External (location / area)"
+  )
+}
+
+group_colours <- c("Internal (property)"        = "#009E73", 
+                   "External (location / area)" = "#D7191C", 
+                   "Time control"               = "grey60")  
+
+# Check the grouping of the predictors that went into the models
+tibble(variable = predictors, group = classify_term(predictors)) |>
+  count(group)
+```
+
+### 7.1 Coefficient plot (BIC model)
+
+Each dot is the estimated change in weekly rent (%), with a 95% interval. The
+intervals are approximate: they come after variable selection, and listings in
+the same area share area-level values.
+
+```{r coef-plot, fig.width=9, fig.height=7}
+coef_df <- broom::tidy(full, conf.int = TRUE) |>
+  filter(term != "(Intercept)") |>
+  mutate(
+    group    = classify_term(term),
+    pct      = (exp(estimate)  - 1) * 100,
+    pct_low  = (exp(conf.low)  - 1) * 100,
+    pct_high = (exp(conf.high) - 1) * 100
+  )
+
+coef_df |>
+  arrange(desc(abs(estimate))) |>
+  select(term, group, estimate, pct, pct_low, pct_high) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  print(n = 25)
+
+coef_df |>
+  filter(group != "Time control") |>
+  slice_max(abs(estimate), n = 20) |>
+  ggplot(aes(x = pct, y = fct_reorder(term, pct), colour = group)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_pointrange(aes(xmin = pct_low, xmax = pct_high)) +
+  scale_colour_manual(values = group_colours) +
+  labs(x = "% change in weekly rent\n(continuous: per +1 SD; binary: yes vs. no)",
+       y = NULL, colour = NULL,
+       title = "Largest effects in the full model") +
+  theme_minimal()
+```
+
+### 7.2 Importance by variable (partial R-squared)
+
+Partial R-squared shows how much of the remaining variation each variable
+explains, on one scale for every predictor. Factors such as `property_type`
+count as a single variable.
+
+```{r partial-r2-plot, fig.width=9, fig.height=7}
+aov2 <- car::Anova(full, type = 2) |>
+  as.data.frame() |>
+  tibble::rownames_to_column("term") |>
+  tibble::as_tibble()
+
+rss <- aov2$`Sum Sq`[aov2$term == "Residuals"]
+
+imp <- aov2 |>
+  filter(term != "Residuals") |>
+  mutate(partial_r2 = `Sum Sq` / (`Sum Sq` + rss),
+         group      = classify_term(term))
+
+imp |>
+  arrange(desc(partial_r2)) |>
+  select(term, group, partial_r2) |>
+  mutate(partial_r2 = round(partial_r2, 4)) |>
+  print(n = 25)
+
+imp |>
+  slice_max(partial_r2, n = 20) |>
+  ggplot(aes(x = partial_r2, y = fct_reorder(term, partial_r2), fill = group)) +
+  geom_col() +
+  scale_fill_manual(values = group_colours) +
+  labs(x = "Partial R-squared", y = NULL, fill = NULL,
+       title = "Which variables explain the most variation in rent (full model)") +
+  theme_minimal()
+```
+
+## 8. Interpretation notes
+
+- Coefficients describe **associations** with rent, not causal effects.
+- The models use listings from **all years**, with `listed_year` (reference
+  2025) and `listed_month` as time controls.
+- Listings more than 2 SD above mean weekly rent are kept in the models; a copy
+  is stored in `high_rent` (2.6) for separate analysis.
+- LASSO coefficients are shrunk towards zero, so they should not be read like
+  the unpenalised stepwise coefficients; use the LASSO mainly to compare
+  predictive performance and which variables are retained (6.1, 6.3).
+- Confidence intervals and p-values after stepwise selection are approximate.
+  Rows from the same area share income, crime and population values, so
+  standard errors are somewhat too small.
+- Because the response is log rent, `(exp(coef) - 1) * 100` is the percentage
+  change in rent.
+- Rank variables by partial R-squared (7.2) rather than by p-values, and use
+  the coefficient plot (7.1) for direction and size.

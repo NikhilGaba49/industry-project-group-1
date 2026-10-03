@@ -1,0 +1,87 @@
+── Data Summary ────────────────────────
+                           Values                      
+Name                       select(rentals, where(is....
+Number of rows             12259                       
+Number of columns          74                          
+_______________________                                
+Column type frequency:                                 
+  numeric                  74                          
+________________________                               
+Group variables            None                        
+
+── Variable type: numeric ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   skim_variable                          n_missing complete_rate        mean        sd       p0       p25       p50      p75     p100
+ 1 lat                                            0             1   -37.8        0.386   -38.8     -37.9     -37.8     -37.8    -34.2 
+ 2 lon                                            0             1   145.         0.547   141.      145.      145.      145.     150.  
+ 3 weekly_rent                                    0             1   631.       295.      205       490       565       690    10000   
+ 4 feat_built_in_wardrobes                        0             1     0.533      0.499     0         0         1         1        1   
+ 5 feat_heating                                   0             1     0.455      0.498     0         0         0         1        1   
+ 6 feat_dishwasher                                0             1     0.434      0.496     0         0         0         1        1   
+ 7 feat_secure_parking                            0             1     0.395      0.489     0         0         0         1        1   
+ 8 feat_internal_laundry                          0             1     0.318      0.466     0         0         0         1        1   
+ 9 feat_air_conditioning                          0             1     0.302      0.459     0         0         0         1        1   
+10 feat_balcony___deck                            0             1     0.200      0.400     0         0         0         0        1   
+11 feat_gas                                       0             1     0.191      0.393     0         0         0         0        1   
+12 feat_floorboards                               0             1     0.151      0.358     0         0         0         0        1   
+13 feat_bath                                      0             1     0.149      0.357     0         0         0         0        1   
+14 feat_intercom                                  0             1     0.130      0.337     0         0         0         0        1   
+15 feat_ensuite                                   0             1     0.126      0.332     0         0         0         0        1   
+16 feat_fully_fenced                              0             1     0.112      0.316     0         0         0         0        1   
+17 feat_study                                     0             1     0.101      0.302     0         0         0         0        1   
+18 feat_furnished                                 0             1     0.0848     0.279     0         0         0         0        1   
+19 feat_split_system_air_conditioning             0             1     0.0869     0.282     0         0         0         0        1   
+20 feat_pets_allowed                              0             1     0.0830     0.276     0         0         0         0        1   
+21 feat_split_system_heating                      0             1     0.0760     0.265     0         0         0         0        1   
+22 feat_remote_garage                             0             1     0.0724     0.259     0         0         0         0        1   
+23 feat_shed                                      0             1     0.0726     0.259     0         0         0         0        1   
+24 feat_ducted_heating                            0             1     0.0674     0.251     0         0         0         0        1   
+25 feat_garden___courtyard                        0             1     0.0640     0.245     0         0         0         0        1   
+26 feat_gym                                       0             1     0.0605     0.238     0         0         0         0        1   
+27 feat_outdoor_entertainment_area                0             1     0.0466     0.211     0         0         0         0        1   
+28 feat_balcony                                   0             1     0.0454     0.208     0         0         0         0        1   
+29 feat_broadband_internet_access                 0             1     0.0417     0.200     0         0         0         0        1   
+30 feat_alarm_system                              0             1     0.0396     0.195     0         0         0         0        1   
+31 feat_swimming_pool                             0             1     0.0398     0.196     0         0         0         0        1   
+32 feat_courtyard                                 0             1     0.0338     0.181     0         0         0         0        1   
+33 feat_solar_panels                              0             1     0.0256     0.158     0         0         0         0        1   
+34 feat_fireplaces                                0             1     0.0238     0.152     0         0         0         0        1   
+35 feat_pool_spa_count_0                          0             1     0.0201     0.141     0         0         0         0        1   
+36 feat_bathtub                                   0             1     0.0197     0.139     0         0         0         0        1   
+37 feat_ensuites                                  0             1     0.0173     0.130     0         0         0         0        1   
+38 feat_carpeted                                  0             1     0.0187     0.135     0         0         0         0        1   
+39 feat_gas_appliances                            0             1     0.0175     0.131     0         0         0         0        1   
+40 feat_evaporative_cooling                       0             1     0.0165     0.127     0         0         0         0        1   
+41 feat_openable_windows                          0             1     0.0158     0.125     0         0         0         0        1   
+42 feat_broadband                                 0             1     0.0147     0.120     0         0         0         0        1   
+43 feat_rumpus_room                               0             1     0.0138     0.117     0         0         0         0        1   
+44 feat_ducted_cooling                            0             1     0.0144     0.119     0         0         0         0        1   
+45 feat_broadband_internet_available              0             1     0.0130     0.113     0         0         0         0        1   
+46 feat_city_views                                0             1     0.0131     0.114     0         0         0         0        1   
+47 feat_gas_heating                               0             1     0.0117     0.108     0         0         0         0        1   
+48 feat_deck                                      0             1     0.0104     0.101     0         0         0         0        1   
+49 feat_laundry                                   0             1     0.0101     0.100     0         0         0         0        1   
+50 feat_air_conditioner                           0             1     0.0100     0.0997    0         0         0         0        1   
+51 feat_separate_dining_room                      0             1     0.00783    0.0881    0         0         0         0        1   
+52 feat_double_glazed_windows                     0             1     0.00799    0.0891    0         0         0         0        1   
+53 listed_year                                    0             1  2025.         0.686  2012      2025      2025      2025     2025   
+54 listed_month                                   0             1     7.92       1.30      1         8         8         9       12   
+55 park_reserve_road_distance_m                   0             1  5384.      3058.       13.9    3043.     4937.     7362.   20810.  
+56 median_weekly_income                           0             1  1170.       289.      436       966      1119      1369     1921   
+57 population                                     0             1 17848.      6648.       78     13610     16927     21266    39389   
+58 log_sports_rec_road_distance_m                 0             1     6.69       0.830     0         6.21      6.68      7.18    10.7 
+59 log_shopping_centre_road_distance_m            0             1     7.55       0.976     1.70      6.97      7.48      7.97    12.6 
+60 log_medical_doctors_road_distance_m            0             1     7.51       1.16      0.131     6.81      7.41      8.08    11.9 
+61 log_medical_clinic_road_distance_m             0             1     7.32       1.15      0.554     6.63      7.25      7.88    12.2 
+62 log_hospital_road_distance_m                   0             1     8.01       0.961     2.94      7.39      7.98      8.63    11.2 
+63 log_park_national_road_distance_m              0             1     8.69       0.795     2.40      8.27      8.69      9.13    11.0 
+64 log_park_local_road_distance_m                 0             1     5.86       0.842     0         5.48      5.96      6.35     9.88
+65 log_school_primary_road_distance_m             0             1     6.87       0.700     1.38      6.48      6.91      7.28    10.7 
+66 log_school_secondary_road_distance_m           0             1     7.36       0.816     2.38      6.87      7.33      7.78    11.2 
+67 log_train_stations_PTV_road_distance_m         0             1     7.66       1.08      0.888     6.97      7.58      8.24    12.4 
+68 log_bus_stops_PTV_road_distance_m              0             1     5.81       1.01      0         5.33      5.89      6.38    11.1 
+69 log_beaches_road_distance_m                    0             1     9.12       1.03      2.46      8.48      9.22      9.76    12.1 
+70 log_bedrooms                                   0             1     1.27       0.321     0         1.10      1.39      1.61     3.93
+71 log_bathrooms                                  0             1     0.924      0.231     0         0.693     1.10      1.10     2.56
+72 log_carspaces                                  0             1     0.847      0.386     0         0.693     0.693     1.10     3.14
+73 log_dist_to_cbd_km_driving                     0             1     3.29       1.06      0.285     2.53      3.30      3.95     6.33
+74 log_crime_rate                                 0             1     9.10       0.443     7.42      8.79      8.98      9.41    10.3 

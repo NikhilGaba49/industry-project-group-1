@@ -227,3 +227,5 @@ external_data/parks/
 
 notebooks/External_Features_Processing/proximity_results
 .DS_Store
+
+/modelling/rentals_final.parquet

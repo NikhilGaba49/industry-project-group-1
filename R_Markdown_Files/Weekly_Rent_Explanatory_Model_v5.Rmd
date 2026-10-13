@@ -593,6 +593,66 @@ imp |>
   )
 ```
 
+## Solar pannels CI
+```{r}
+# Find the solar panel term in the full model
+solar_term <- str_subset(names(coef(full)), "solar")
+stopifnot(length(solar_term) == 1)   # "feat_solar_panels"
+
+solar <- broom::tidy(full, conf.int = TRUE) |>
+  filter(term == solar_term) |>
+  mutate(pct      = (exp(estimate)  - 1) * 100,
+         pct_low  = (exp(conf.low)  - 1) * 100,
+         pct_high = (exp(conf.high) - 1) * 100)
+
+# Normal curve for the estimate on the log scale, converted to % change in rent
+make_curve <- function(b) {
+  tibble(b = b,
+         pct     = (exp(b) - 1) * 100,
+         density = dnorm(b, solar$estimate, solar$std.error))
+}
+
+curve_df <- make_curve(seq(solar$estimate - 4 * solar$std.error,
+                           solar$estimate + 4 * solar$std.error,
+                           length.out = 500))
+
+# Shaded region built directly between the CI limits, so its edges match the bar exactly
+ci_df <- make_curve(seq(solar$conf.low, solar$conf.high, length.out = 300))
+
+col_main <- "#009E73"   # same green as "Internal (property)" in the other plots
+
+# x-axis ticks at the exact interval values
+x_breaks <- c(solar$pct_low, solar$pct, solar$pct_high)
+x_labels <- sprintf("%+.1f%%", x_breaks)
+
+ggplot(curve_df, aes(x = pct, y = density)) +
+  geom_ribbon(data = ci_df, aes(ymin = 0, ymax = density),
+              fill = col_main, alpha = 0.35) +
+  geom_line(colour = col_main, linewidth = 1.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey30", linewidth = 0.8) +
+  geom_segment(data = solar, aes(x = pct_low, xend = pct_high, y = 0, yend = 0),
+               inherit.aes = FALSE, colour = col_main, linewidth = 3, lineend = "butt") +
+  geom_point(data = solar, aes(x = pct, y = 0),
+             inherit.aes = FALSE, size = 6, colour = "white") +
+  geom_point(data = solar, aes(x = pct, y = 0),
+             inherit.aes = FALSE, size = 4, colour = col_main) +
+  scale_x_continuous(breaks = x_breaks, labels = x_labels) +
+  labs(title = "Association between solar panels and weekly rent",
+       subtitle = "Estimated % change in weekly rent for listings with solar panels vs. without (full model)\nAxis shows the lower 95% limit, point estimate and upper 95% limit",
+       x = "% change in weekly rent", y = NULL) +
+  theme_minimal(base_size = 18) +
+  theme(
+    axis.text.x        = element_text(size = 16, colour = "black", face = "bold"),
+    axis.title.x       = element_text(size = 16, margin = margin(t = 10)),
+    axis.text.y        = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    plot.title         = element_text(size = 20, face = "bold"),
+    plot.subtitle      = element_text(size = 13, colour = "grey30", margin = margin(b = 12))
+  )
+```
+
+
 ## 8. Interpretation notes
 
 - Coefficients describe **associations** with rent, not causal effects.

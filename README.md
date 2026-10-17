@@ -45,7 +45,7 @@ The Python notebooks in `notebooks/` clean and curate the rental listings, clean
   ```
   pip install -r requirements.txt
   ```
-- An [OpenRouteService](https://openrouteservice.org/) account and API key
+- A free [HeiGIT](https://account.heigit.org/signup) account and API key, for the OpenRouteService (ORS) API
 - The provided `rea_data.zip`
 - R 4.5.1 and Quarto (see [R Dependencies](#r-dependencies))
 
@@ -79,8 +79,9 @@ industry-project-group-1/
 
 ### 4. Add your ORS API key
 
-1. Create an API key from [OpenRouteService](https://openrouteservice.org/dev/#/signup).
-2. In the main `industry-project-group-1` folder, create a file named `.env` containing:
+1. Create a free HeiGIT account at [account.heigit.org/signup](https://account.heigit.org/signup). The account comes with a free Standard API key. (The notebooks call the HeiGIT-hosted OpenRouteService API at `api.heigit.org`, so the key must come from HeiGIT.)
+2. Copy your API key from your [HeiGIT dashboard](https://account.heigit.org).
+3. In the main `industry-project-group-1` folder, create a file named `.env` containing:
 
 ```
 ORS_API_KEY="{insert key here}"
@@ -173,7 +174,7 @@ Then render the following files from `R_Markdown_Files/`:
 `proximities_facilities.ipynb` (step 6c) makes a large number of ORS matrix requests, and the free ORS plan has daily and per-minute limits. **A full run takes several days.**
 
 - The first pass alone needs about 1,670 requests across the 13 destination types. The second pass, third pass and full-search steps add more.
-- The notebook caps each run at 450 requests (`MAX_REQUESTS_PER_RUN`) and waits 1.6 seconds between requests (`SECONDS_BETWEEN_REQUESTS`) to stay within the free-tier limits. Check the limits shown on your ORS dashboard and adjust these two values if yours differ.
+- The notebook caps each run at 450 requests (`MAX_REQUESTS_PER_RUN`) and waits 1.6 seconds between requests (`SECONDS_BETWEEN_REQUESTS`) to stay within the free-tier limits. Check the limits shown on your [HeiGIT dashboard](https://account.heigit.org) (the [HeiGIT API FAQ](https://giscience.github.io/openrouteservice/frequently-asked-questions#when-and-how-does-my-quota-reset) explains when quotas reset) and adjust these two values if yours differ.
 - **It is OK if a code cell stops partway.** When the daily quota is reached (HTTP 429), the run cap is hit, or the cell is interrupted or errors, the notebook stops and (for quota and run cap) prints a message. This is expected, not a failure.
 - **Resuming:** each batch is cached in `proximity_results/cache_*` as soon as it returns, so nothing already completed is lost. Simply rerun the same cell and it continues where it stopped. If there is still room left in that day's ORS quota, restart it straight away. Once the quota is used up, wait for it to reset (usually the next day) and then rerun.
 - **Do not delete `proximity_results/` between runs**, or the cached requests are lost and will use up quota again.

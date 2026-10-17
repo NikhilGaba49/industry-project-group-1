@@ -17,7 +17,10 @@ The objective is to **grow agency revenue**. The project answers three questions
 | Source | Data | Used for |
 |---|---|---|
 | Australian Bureau of Statistics | Population, income | Affordability |
-| Victorian Government open data | Schools, parks and conservation reserves, public transport stops, crime by LGA, moving annual rent | Liveability and forecasts |
+| Victorian Government open data | Schools, parks and conservation reserves, crime by LGA, moving annual rent | Liveability and forecasts |
+| Public Transport Victoria (PTV) | Train station and bus stop locations | Liveability and proximity features |
+| OpenStreetMap (via the Overpass API) | Shopping centres, local parks, beaches, doctors, clinics and hospitals | Liveability and proximity features |
+| HeiGIT / OpenRouteService (ORS) API | Road distances and travel times from each rental property to its nearest facilities | Proximity features |
 | Rental listings (`rea_data`) | 12,000+ listings across Victoria: weekly rent and property features | Pricing model and rent drivers |
 
 Distances to facilities are calculated using the OpenRouteService (ORS) API. Data is retrieved via external APIs, and API keys are stored locally (never committed).
@@ -120,6 +123,7 @@ Run **every cell** of each notebook, in the exact order below. Complete one fold
 1. `Raw_layer.ipynb`
 2. `Curated_layer_1.ipynb`
 3. `Curated_layer_2.ipynb`
+4. `Curated_layer_3.ipynb`
 
 **6b. `clean_non_features_external_data/`** (any order)
 
@@ -241,6 +245,7 @@ industry-project-group-1/
 ├── .Rprofile
 ├── renv.lock
 ├── requirements.txt
+├── summary_notebook.ipynb
 └── README.md
 ```
 

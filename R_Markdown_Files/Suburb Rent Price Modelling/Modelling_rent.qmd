@@ -60,9 +60,9 @@ get_suburb <- function(name) {
 
 Here, we begin investigating whether or not we should log our data since this can make a large difference in our modelling process later on.
 
-Firstly, we can make domain informed judgements as follows; 
+Firstly, we can make domain informed judgements as follows;
 
-1. House prices grow multiplicativley. Prices compound, as do the things that drive them: incomes, inflation and credit. A suburb growing at a steady 5% a year produces an exponential curve in levels but a straight line in logs. Linear trends therefore describe log prices much more naturally. A slope in logs is a constant percentage growth rate, which is how price growth actually behaves.
+1.  House prices grow multiplicativley. Prices compound, as do the things that drive them: incomes, inflation and credit. A suburb growing at a steady 5% a year produces an exponential curve in levels but a straight line in logs. Linear trends therefore describe log prices much more naturally. A slope in logs is a constant percentage growth rate, which is how price growth actually behaves.
 
 2.  Price changes scale with the price level. A \$100 rise means something very different for a \$300k house than for a \$1.5m house in the context of rent. Market movements are proportional, so in dollar terms the volatility grows as prices rise. In levels, that makes the variance non-constant, which violates the constant-variance assumption behind ARIMA errors, AICc comparisons and prediction intervals. Logs turn proportional variation into roughly constant variation.
 
@@ -402,12 +402,18 @@ hist(rmse_df$MAPE, breaks = 30,
      main = "MAPE across suburbs",
      xlab = "Mean absolute percentage error (%)", col = "grey80")
 abline(v = median(rmse_df$MAPE), col = "red", lwd = 2)
+legend("topright",
+       legend = paste("Median =", round(median(rmse_df$MAPE, na.rm = TRUE), 2), "%"),
+       col = "red", lty = 1, lwd = 2, bty = "n")
 
 
 hist(rmse_df$RMSE, breaks = 30,
      main = "RMSE across suburbs",
      xlab = "RMSE of Median Price Forecasts ($/week)", col = "grey80")
 abline(v = median(rmse_df$RMSE), col = "red", lwd = 2)
+legend("topright",
+       legend = paste("Median =", round(median(rmse_df$RMSE, na.rm = TRUE), 2), "%"),
+       col = "red", lty = 1, lwd = 2, bty = "n")
 
 kable(head(rmse_df, 5), digits = 3, row.names = FALSE, caption = "Most accurate suburbs (based on MAPE)")
 kable(head(rmse_df[order(-rmse_df$MAPE), ], 5),
@@ -737,8 +743,7 @@ So, lets begin investigating. Firstly, lets create a histogram of how growth rat
 
 $$
 Growth \space Rate (\%) = \frac{forecast - current}{current}\times100 = (\frac{forecast_{sep 2031}}{forecast_{sep2026}}-1)\times100
-$$
-**NOTE**: Since we are interested in the top 10 suburbs with the highest growth rate in 5 years time, we need to calculate growth rates based off of our 2026 forecast.
+$$ **NOTE**: Since we are interested in the top 10 suburbs with the highest growth rate in 5 years time, we need to calculate growth rates based off of our 2026 forecast.
 
 ```{r}
 h_base <- 4     # Sep 2026 (2026Q3), the 4th forecast quarter
@@ -762,7 +767,8 @@ legend("topright",
        col = c("red", "black"), lty = c(1, 2), lwd = c(2, 1), bty = "n", cex = 0.8)
 ```
 
-Now, to find the highest growth forecasted growth rates after 5 years (6 years of actual forecasting) we will sort our data by growth rate and pick the 10 highest cases. 
+Now, to find the highest growth forecasted growth rates after 5 years (6 years of actual forecasting) we will sort our data by growth rate and pick the 10 highest cases.
+
 ```{r}
 h_base <- 4     # Sep 2026 (2026Q3), the 4th forecast quarter
 h      <- 24    # Sep 2031 (2031Q3)

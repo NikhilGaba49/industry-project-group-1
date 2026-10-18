@@ -1,0 +1,905 @@
+---
+title: "Suburb Median Rent Price Forecasting"
+format: html
+editor: visual
+---
+
+# Part A: Investigating Our data
+
+## Reading In our Data
+
+```{r}
+library(urca)
+library(forecast)
+library(knitr)
+library(parallel)
+```
+
+Read in our data for Median rent prices from 2000Q1 to 2025Q3 for every suburb in Victoria.
+
+```{r}
+dt <- read.csv("rent_by_qtr_suburb_refactored.csv")
+```
+
+Investigate how many NA's appear within our data set as well as where. **Note:** *Docklands has 7 NA values, and every other suburb remains perfect.*
+
+```{r}
+# Total number of NAs in the whole dataset
+sum(is.na(dt))
+
+# NAs per suburb (row), showing only suburbs that have any NA values
+na_by_suburb <- rowSums(is.na(dt[, -1]))
+names(na_by_suburb) <- dt$Suburb
+na_by_suburb[na_by_suburb > 0]
+
+# NAs per quarter (column), showing only quarters that have  NA values
+na_by_quarter <- colSums(is.na(dt[, -1]))
+na_by_quarter[na_by_quarter > 0]
+```
+
+Define a function that extracts the row within the data that matches the suburb name given and drop the first column (which has all suburb names). Since docklands is missing most of the data before 2002Q1 (except 2000Q2), for simplicities sake, we will only look at data from 2002Q1 onwards. This is handled within our `get_suburb()` function.
+
+```{r}
+
+# Define a function that extracts the row within the data that matches 
+# the suburb name given and drop the first column (which has all suburb names).
+get_suburb <- function(name) {
+  y <- as.numeric(unlist(dt[dt$Suburb == name, -1]))
+  Y <- ts(y, start = c(2000, 1), frequency = 4)
+  
+  # Docklands has no data before Mar 2002, so start it there
+  if (name == "Docklands") {
+    Y <- window(Y, start = c(2002, 1))
+  }
+  
+  return(Y)
+}
+```
+
+## Deciding To Log Our Data
+
+Here, we begin investigating whether or not we should log our data since this can make a large difference in our modelling process later on.
+
+Firstly, we can make domain informed judgements as follows;
+
+1.  House prices grow multiplicativley. Prices compound, as do the things that drive them: incomes, inflation and credit. A suburb growing at a steady 5% a year produces an exponential curve in levels but a straight line in logs. Linear trends therefore describe log prices much more naturally. A slope in logs is a constant percentage growth rate, which is how price growth actually behaves.
+
+2.  Price changes scale with the price level. A \$100 rise means something very different for a \$300k house than for a \$1.5m house in the context of rent. Market movements are proportional, so in dollar terms the volatility grows as prices rise. In levels, that makes the variance non-constant, which violates the constant-variance assumption behind ARIMA errors, AICc comparisons and prediction intervals. Logs turn proportional variation into roughly constant variation.
+
+3.  Log differences are growth rates. diff(log(Y)) is approximately the quarterly percentage change, the same measure the ABS and industry indices use to report housing markets. This makes the model's parameters and forecasts directly interpretable.
+
+4.  It makes suburbs comparable. Our suburbs range widely in price. In levels, expensive suburbs dominate any cross-suburb comparison (RSS, AICc, weighting) simply because their numbers are larger. In logs, everything is on a percentage scale.
+
+5.  Forecasts stay positive. Converting log forecasts back to dollars (exp()) can never produce a negative price, and the prediction intervals widen in proportion to the price level, which is realistic.
+
+```{r}
+Y <- get_suburb("Southbank")
+plot(Y)
+plot(log(Y))
+```
+
+# Part B: Modelling
+
+In this section, we will begin the modelling of the median rent prices for each suburb. Firstly though, to evaluate our models 6 year forecasting ability (since we only have data to 2025Q3, predicting 5 years ahead into the future but forecasting 6), we will do a test-train split. Namely, we will train from 2000Q1 until 2019Q3 and test on 2019Q4 to 2025Q3
+
+## Fixing A Trend Break
+
+Define a function to represent the trend break indicator variable
+
+```{r}
+trend_break <- function(b, time) {
+  return ((time>b)*(time-b))
+}
+```
+
+Now, upon qualitative analysis on the data, we decided to include a single trend break along with our time trend and stochastic component (to be modelled). So the following cell calculates, for each suburb, the most ideal location to have a trend break based off the residual sum of squares.
+
+```{r}
+trend_breaks <- list()
+# Find the optimal trend break 
+for (s in dt$Suburb) {
+  FirstForecast <- 2019.75
+  
+  Y  <- log(get_suburb(s))
+  
+  Time  <- time(Y)
+  
+  t_est   <- which(Time < FirstForecast)
+  
+  # We will have a standard 15% (3 years) zone where no break points are allowed.
+  # So with the training set being from 2000Q1 to 2019Q3 gives:
+  Break_range <- Time[which(Time >= 2003 & Time < 2016.75)]
+    
+  # M is a matrix for the RSS corresponding to each b
+  M <- matrix(nrow = length(Break_range), ncol = 2)
+  colnames(M) <- c("b", "RSS")
+  M[, "b"] <- Break_range
+  
+  for (b in Break_range){
+    TB_b <- trend_break(b, Time[t_est])
+    X <- cbind(Time[t_est], TB_b)
+    
+    eq1 <- Arima(Y[t_est], order=c(0,0,0), xreg=X)
+    
+    # Store RSS in appropriate entry of M
+    M[which(M[, "b"] == b), "RSS"] <-  sum(eq1$residuals^2)
+  }
+  b_best  <- M[which.min(M[, "RSS"]), "b"]
+  
+  trend_breaks[[s]] <- list(
+    b_best  = b_best
+  )
+}
+
+```
+
+Here, we check how the break values are distributed
+
+```{r}
+b_vals <- sapply(trend_breaks, function(x) unname(x$b_best))
+
+range(b_vals)
+summary(b_vals)
+sort(b_vals)
+
+hist(b_vals, breaks = 30, main = "Trend break dates", xlab = "b")
+```
+
+Lets graph a random suburb with a trend break to ensure it looks like what we expect.
+
+```{r}
+s <- "Docklands"
+Y <- log(get_suburb(s))
+Time  <- time(Y)
+t_est <- which(Time < FirstForecast)
+
+b <- trend_breaks[[s]]$b_best
+
+TB_b <- trend_break(b, Time[t_est])
+X    <- cbind(Time[t_est], TB_b)
+eq1  <- Arima(Y[t_est], order=c(0,0,0), xreg=X)
+
+# Fitted values = data minus residuals, as a ts so they line up on the time axis
+fit_line <- ts(Y[t_est] - eq1$residuals, start = start(Y), frequency = 4)
+
+plot(Y, xlim = c(2000, 2019.75), main = paste(s, "- trend break at", b), ylab = "Log Price")
+lines(fit_line, col = "red", lwd = 1)
+abline(v = b, lty = 2)
+```
+
+## Fixing The Stochastic Part
+
+Now its time to calculate the stochastic part of the equation. We will use ARIMA(p,d,q) to compute the stochastic components of our models.
+
+We will now define a `simulate_adf_cv()` function that simulates many random walks (the unit-root null hypothesis) and, on each one, runs a Dickey–Fuller regression (no lagged differences) that includes the supplied deterministic terms $X_{det}$: the trend and trend break at b when testing levels, or the level-shift dummy at b when testing first differences. It returns the simulated p-value, the share of simulated t-statistics below the observed t_stat, along with the simulated t-statistics themselves (tADF).
+
+```{r}
+simulate_adf_cv <- function(n, X_det, t_stat, reps = 20000){
+  t <- 2:n
+  X <- X_det[t, , drop=FALSE]      # deterministic terms, aligned with t
+  
+  tADF <- matrix(nrow=reps, ncol=1)
+  for (r in 1:reps){
+    # Simulate under H0
+    Y_simulated <- arima.sim(n=n, model=list(order=c(0,1,0)))[-1]
+    
+    DY <- Y_simulated[t]-Y_simulated[t-1]
+    Y1 <- Y_simulated[t-1]
+    
+    tADF[r] <- summary(lm(DY~X+Y1))$coefficients["Y1","t value"]
+  }
+  
+  p_val <- mean(tADF < t_stat)
+  return(list(p_val = p_val, tADF = tADF))
+}
+```
+
+Define a function `adf_test()` that runs a Dickey–Fuller regression of $\Delta Y_t$ on the deterministic terms X_det and $Y_{t-1}$, then compares the t-statistic on $Y_{t-1}$ with the null distribution simulated by `simulate_adf_cv()`. It returns 1 if the unit root is not rejected at the 5% level (a difference is needed) and 0 if it is rejected (the series is stationary around the deterministic terms), so its output can be added directly to the differencing order d.
+
+```{r}
+adf_test <- function(Y, X_det, reps = 20000){
+  n <- length(Y)
+  t <- 2:n
+  
+  Y_1 <- Y[t-1]
+  DY  <- Y[t]-Y[t-1]
+  X   <- X_det[t, , drop=FALSE]
+  
+  t_stat <- summary(lm(DY ~ X + Y_1))$coefficients["Y_1", "t value"]
+  
+  p_val <- simulate_adf_cv(n, X_det, t_stat, reps)$p_val
+  return(1 * (p_val > 0.05))     # 1 = unit root (don't reject), 0 = stationary
+}
+```
+
+Now, lets begin our model selection process for our ARIMA(p,d,q) models. For each suburb, this code takes log weekly rents from 2000 Q1 to 2019 Q3, tests for a unit root around the suburb's trend break (and again in first differences if needed) to choose d, and then searches every ARIMA(p, d, q) with p, q ≤ 9, keeping the lowest-AICc model whose residuals pass the Ljung–Box test. It then forecasts 2019 Q4 to 2025 Q3, converts the forecasts back to dollars, and stores the model, its orders, the forecasts and the test-period RMSE.
+
+**NOTE**: p and q were chosen (somewhat arbitrarily) as 9 to allow for 2 years of lags worth of data +1 to capture any yearly dependence but without becoming too computationally expensive.
+
+```{r}
+fit_arima <- function(y, order, xreg, drift) {
+  tryCatch(
+    Arima(y, order = order, xreg = xreg, include.drift = drift),
+    error = function(e) tryCatch(
+      Arima(y, order = order, xreg = xreg, include.drift = drift, method = "ML"),
+      error = function(e2) NULL
+    )
+  )
+}
+```
+
+```{r}
+RNGkind("L'Ecuyer-CMRG")   # reproducible random streams across cores
+set.seed(123)
+
+fit_suburb <- function(s){
+  pmax <- 9 # Max AR lag order
+  qmax <- 9 # Max MA lag order
+  FirstForecast <- 2019.75
+  
+  Y  <- log(get_suburb(s))
+  
+  Time   <- as.numeric(time(Y))
+  t_est  <- which(Time < FirstForecast)
+  t_test <- which(Time >= FirstForecast)
+  
+  b   <- trend_breaks[[s]]$b_best
+  TBt <- 1 * (Time > b) * (Time-b)
+  
+  Y_test <- exp(Y[t_test])    # test data in dollars
+  hmax <- length(t_test)
+  
+  # Storage for Ljung-Box p-values and AICc
+  LBp <- matrix(nrow=pmax+1, ncol=qmax+1)
+  rownames(LBp) <- paste0("p=", 0:pmax)
+  colnames(LBp) <- paste0("q=", 0:qmax)
+  AICc <- LBp
+  
+  nd <- adf_test(Y[t_est], cbind(Time[t_est], TBt[t_est]))
+  
+  if (nd == 1){
+    # Drops first training quarter, so results line up with diff(Y[t_est])
+    # which starts at the second quarter. 
+    DU <- 1 * (Time[t_est][-1] > b)  
+    nd <- nd + adf_test(diff(Y[t_est]), cbind(DU))
+  }
+  
+  if (nd == 0){
+    X <- cbind(Time, TBt)
+    drift <- FALSE
+  } else if (nd == 1){
+    X <- cbind(TBt)
+    drift <- TRUE      # drift = constant growth rate, replaces Time
+  } else {
+    X <- cbind(TBt)
+    drift <- FALSE     # trend annihilated at d = 2
+  }
+  
+  models <- list()
+  
+  for (p in 0:pmax){
+    for (q in 0:qmax){
+      eq <- fit_arima(Y[t_est], c(p, nd, q), X[t_est, , drop = FALSE], drift)
+      
+      if (is.null(eq)) next
+      
+      AICc[p+1, q+1] <- eq$aicc
+      LBp[p+1,q+1] <- Box.test(eq$residuals, 
+                             lag = max(8, p + q + 4), 
+                             type = "Ljung-Box", 
+                             fitdf = p + q)$p.value
+      models[[paste(p, q)]] <- eq
+    }
+  }
+  
+  # Best model: lowest AICc among those passing Ljung-Box
+  AICc_ok <- AICc
+  AICc_ok[LBp <= 0.05 | is.na(LBp)] <- NA 
+  
+  if (all(is.na(AICc_ok))) return(NULL)   # no model passed Ljung-Box
+  
+  best <- which(AICc_ok == min(AICc_ok, na.rm = TRUE), arr.ind = TRUE)
+  p_best <- best[1, 1] - 1
+  q_best <- best[1, 2] - 1
+  model  <- models[[paste(p_best, q_best)]]
+  
+  # Forecast the test period and convert back to dollars
+  forecasts <- exp(forecast(model, xreg=X[t_test, , drop=FALSE], h=hmax)$mean)
+  RMSE <- sqrt(mean((Y_test-forecasts)^2, na.rm = TRUE))
+  
+  return(list(
+    suburb      = s,
+    Y           = Y,
+    Y_train     = Y[t_est],
+    Y_test      = Y_test,
+    model       = model,
+    trend_break = b,
+    nd          = nd,
+    p           = p_best,
+    q           = q_best, 
+    AICc        = AICc,
+    forecasts   = forecasts,
+    RMSE        = RMSE
+  ))
+}
+
+n_cores <- max(1, detectCores(logical = FALSE) - 1)
+cl <- makeCluster(n_cores)
+
+# Reproducible random streams (replaces RNGkind/set.seed for the workers)
+clusterSetRNGStream(cl, 123)
+
+# Load packages on each worker
+clusterEvalQ(cl, {
+  library(forecast)
+  library(urca)
+})
+
+# Send everything fit_suburb() depends on
+clusterExport(cl, c("dt", "get_suburb", "trend_breaks", "trend_break",
+                    "simulate_adf_cv", "adf_test", "fit_arima"))
+
+# parLapplyLB hands out suburbs one at a time, which balances the load
+# better than parLapply when some suburbs take much longer than others
+results <- parLapplyLB(cl, dt$Suburb, fit_suburb)
+stopCluster(cl)
+names(results) <- dt$Suburb
+```
+
+To be sure, lets look to see if any models are failing to fit.
+
+```{r}
+for (s in names(results)) {
+  r   <- results[[s]]
+  idx <- which(is.na(r$AICc), arr.ind = TRUE)   # row/col positions of NAs
+  
+  for (i in seq_len(nrow(idx))) {
+    p <- idx[i, "row"] - 1                       # row 1 = p=0
+    q <- idx[i, "col"] - 1                       # col 1 = q=0
+    cat("Fit failed:", s, "ARIMA(", p, ",", r$nd, ",", q, ")\n")
+  }
+}
+```
+
+In this case, there are some models that are failing to fit most likely due to the common factor issue arising. i.e. if a model is over-specified on both sides then the redundant AR and MA terms can "cancel" and the parameters become unidentified. This is not too concerning though because most likely those complex models (i.e. large p and q) will not materially improve fit even if they did estimate, hence would increase AIC.
+
+## Visualising Our Results
+
+Lets print out some metrics to better understand our data.
+
+```{r}
+# How many of each number of differencing was required
+cat("d values")
+table(sapply(results, function(r) r$nd)) 
+cat("\n")
+
+# How many of each p-value appeared during modelling (missing = 0)
+cat("p values")
+table(sapply(results, function(r) r$p))
+cat("\n")
+
+# How many of each q-value appeared during modelling (missing = 0)
+cat("q values")
+table(sapply(results, function(r) r$q))
+```
+
+Here are some more metrics focused on the RMSE and MAPE/MPE and how it is distributed. Also, when determining which suburbs are the most and least accurate in their forecasts, we will use MAPE since this is a percentage and so every suburb is on the same scale.
+
+$$
+MAPE = \frac{|actual-forecast|}{actual}, \space \space MPE = \frac{actual - forecast}{actual}
+$$ So, a positive MPE means that our actual forecast wasn't as high as the actual value so we **under**-forecast the true value. Likewise, a negative MPE means we over-forecast the true value.
+
+```{r}
+rmse_df <- data.frame(
+  Suburb   = names(results),
+  RMSE     = sapply(results, function(r) r$RMSE),
+  MAPE     = sapply(results, function(r) 
+    100 * mean(abs(r$Y_test - r$forecasts) / r$Y_test, na.rm = TRUE)),
+  MPE      = sapply(results, function(r) # 
+    100 * mean((r$Y_test - r$forecasts) / r$Y_test, na.rm = TRUE)), 
+  nd       = sapply(results, function(r) r$nd),
+  p        = sapply(results, function(r) r$p),
+  q        = sapply(results, function(r) r$q),
+  row.names = NULL
+)
+
+rmse_df <- rmse_df[order(rmse_df$MAPE), ]
+
+measures <- rmse_df[, c("RMSE", "MAPE", "MPE")]
+
+summary_tab <- data.frame(
+  Measure = c("RMSE (\\$/week)", "MAPE (%)", "MPE (%)"),
+  Min     = sapply(measures, min),
+  Median  = sapply(measures, median),
+  Mean    = sapply(measures, mean),
+  Max     = sapply(measures, max),
+  row.names = NULL
+)
+kable(summary_tab, digits = 1, caption = "Test-period forecast accuracy across suburbs")
+
+hist(rmse_df$MAPE, breaks = 30,
+     main = "MAPE across suburbs",
+     xlab = "Mean absolute percentage error (%)", col = "grey80")
+abline(v = median(rmse_df$MAPE), col = "red", lwd = 2)
+
+
+hist(rmse_df$RMSE, breaks = 30,
+     main = "RMSE across suburbs",
+     xlab = "RMSE of Median Price Forecasts ($/week)", col = "grey80")
+abline(v = median(rmse_df$RMSE), col = "red", lwd = 2)
+
+kable(head(rmse_df, 5), digits = 3, row.names = FALSE, caption = "Most accurate suburbs (based on MAPE)")
+kable(head(rmse_df[order(-rmse_df$MAPE), ], 5),
+      digits = 3, row.names = FALSE, caption = "Least accurate suburbs (based on MAPE)")
+
+```
+
+Lets define a function that will plot the appropriate trend lines and forecasts for a given suburb to help us visualize the forecasting performance and model fit.
+
+```{r}
+plot_suburb <- function(s) {
+  r <- results[[s]]
+  
+  Y      <- r$Y
+  Time   <- as.numeric(time(Y))
+  t_est  <- which(Time < 2019.75)
+  t_test <- which(Time >= 2019.75)
+  b      <- r$trend_break
+  TBt    <- 1 * (Time > b) * (Time - b)
+  
+  if (r$nd == 0){
+    X <- cbind(Time, TBt)
+  } else {
+    X <- cbind(TBt)
+  }
+  
+  fc <- forecast(r$model, xreg = X[t_test, , drop = FALSE], h = length(t_test))
+  
+  start_fit <- c(floor(Time[1]), round((Time[1] %% 1) * 4) + 1)
+  fitted_ts <- ts(exp(as.numeric(fitted(r$model))), start = start_fit, frequency = 4)
+  fc_mean <- ts(exp(as.numeric(fc$mean)), start = c(2019, 4), frequency = 4)
+  
+  # 95% Interval assuming normality.
+  fc_lower  <- ts(exp(as.numeric(fc$lower[, 2])), start = c(2019, 4), frequency = 4)
+  fc_upper  <- ts(exp(as.numeric(fc$upper[, 2])), start = c(2019, 4), frequency = 4)
+  
+  plot(exp(Y), ylim = range(exp(Y), fc_lower, fc_upper, na.rm = TRUE),
+       main = paste(s, "- ARIMA(", r$p, ",", r$nd, ",", r$q, ") with trend break"),
+       ylab = "Median weekly rent ($/week)", xlab = "Time")
+  lines(fitted_ts, col = adjustcolor("blue", 0.4), lwd = 1.5)
+  lines(fc_mean,   col = "red", lwd = 2)
+  lines(fc_lower,  col = "red", lty = 2)
+  lines(fc_upper,  col = "red", lty = 2)
+  
+  abline(v = b, lty = 3)
+  abline(v = 2019.75, col = "grey50")
+  
+  legend("topleft",
+         c("Actual", "Fitted (training)", "Forecast (test)", "95% interval", "Trend break", "Forecast start"),
+         col = c("black", adjustcolor("blue", 0.4), "red", "red", "black", "grey50"),
+         lty = c(1, 1, 1, 2, 3, 1), lwd = c(1, 1.5, 2, 1, 1, 1), bty = "n", cex = 0.8)
+}
+```
+
+Plot a few different suburbs to visualize what the most and least accurate forecasted suburbs look like, aswell as suburbs that require different amounts of differencing.
+
+```{r}
+plot_suburb("Echuca")                                # Zero differences 
+plot_suburb("Albert Park-Middle Park-West St Kilda") # One Difference 
+
+
+plot_suburb("Brighton East")                         # Most Accurate Suburb
+plot_suburb("North Bendigo")                         # Least Accurate Suburb
+
+```
+
+# Part C: Forecasting into the Future
+
+Now that we have some metrics on how well our forecasting actually performs, its time to forecast 5 years into the future (2031 Sep). This equates to 6 years from the last observation from our data that we are given (which has its last observation at 2025 Sep). **Note:** It may be the case that our forecasts might be better than we expect since our training data now includes COVID which is an extreme world event. This event most likely made inflated our forecasting error in part B.
+
+## Fixing A Trend Break
+
+We will calculate an updated trend-breaks now that we have access to the entirety of the data.
+
+```{r}
+trend_breaks <- list()
+# Find the optimal trend break 
+for (s in dt$Suburb) {
+  FirstForecast <- 2025.75
+  
+  Y  <- log(get_suburb(s))
+  
+  Time  <- time(Y)
+  
+  t_est   <- which(Time < FirstForecast)
+  
+  # We will have a standard 15% (approx 4 years) zone where no break points are allowed.
+  # So with the training set being from 2000Q1 to 2025Q3 gives:
+  Break_range <- Time[which(Time >= 2004 & Time < 2021.75)]
+    
+  # M is a matrix for the RSS corresponding to each b
+  M <- matrix(nrow = length(Break_range), ncol = 2)
+  colnames(M) <- c("b", "RSS")
+  M[, "b"] <- Break_range
+  
+  for (b in Break_range){
+    TB_b <- trend_break(b, Time[t_est])
+    X <- cbind(Time[t_est], TB_b)
+    
+    eq1 <- Arima(Y[t_est], order=c(0,0,0), xreg=X)
+    
+    # Store RSS in appropriate entry of M
+    M[which(M[, "b"] == b), "RSS"] <-  sum(eq1$residuals^2)
+  }
+  b_best  <- M[which.min(M[, "RSS"]), "b"]
+  
+  trend_breaks[[s]] <- list(
+    b_best  = b_best
+  )
+}
+
+```
+
+## Fixing The Stochastic Part
+
+Finally, lets estimate our models with access to the entire data set, using a very similar process as in Part B.
+
+```{r}
+RNGkind("L'Ecuyer-CMRG")   # reproducible random streams across cores
+set.seed(123)
+
+fit_suburb_future <- function(s){
+# Loop over every suburb (row) within our dataset.
+  pmax <- 9 # Max AR lag order
+  qmax <- 9 # Max MA lag order
+  FirstForecast <- 2025.75
+  
+  Y  <- log(get_suburb(s))
+
+  
+  Time   <- as.numeric(time(Y))
+  t_est  <- which(Time < FirstForecast)
+
+  b   <- trend_breaks[[s]]$b_best
+  TBt <- 1 * (Time > b) * (Time-b)
+  
+  hmax <- 24
+  
+  # Storage for Ljung-Box p-values and AICc
+  LBp <- matrix(nrow=pmax+1, ncol=qmax+1)
+  rownames(LBp) <- paste0("p=", 0:pmax)
+  colnames(LBp) <- paste0("q=", 0:qmax)
+  AICc <- LBp
+  
+  nd <- adf_test(Y[t_est], cbind(Time[t_est], TBt[t_est]))
+  
+  # Build regressors for the future quarters (Dec 2025 onwards)
+  Time_future <- max(Time) + (1:hmax) / 4
+  TB_future   <- 1 * (Time_future > b) * (Time_future - b)
+  
+  if (nd == 0){
+    X_future <- cbind(Time = Time_future, TBt = TB_future)
+  } else {
+    X_future <- cbind(TBt = TB_future)
+  }
+  
+  if (nd == 1){
+    # Drops first training quarter, so results line up with diff(Y[t_est])
+    # which starts at the second quarter. 
+    DU <- 1 * (Time[t_est][-1] > b)  
+    nd <- nd + adf_test(diff(Y[t_est]), cbind(DU))
+  }
+  
+  if (nd == 0){
+    X <- cbind(Time, TBt)
+    drift <- FALSE
+  } else if (nd == 1){
+    X <- cbind(TBt)
+    drift <- TRUE      # drift = constant growth rate, replaces Time
+  } else {
+    X <- cbind(TBt)
+    drift <- FALSE     # trend annihilated at d = 2
+  }
+
+  
+  models <- list()
+  
+  for (p in 0:pmax){
+    for (q in 0:qmax){
+      
+      eq <- fit_arima(Y[t_est], c(p, nd, q), X[t_est, , drop = FALSE], drift)
+      if (is.null(eq)) next
+    
+      AICc[p+1, q+1] <- eq$aicc
+      LBp[p+1,q+1] <- Box.test(eq$residuals, 
+                             lag = max(8, p + q + 4), 
+                             type = "Ljung-Box", 
+                             fitdf = p + q)$p.value
+      models[[paste(p, q)]] <- eq
+    }
+  }
+  # Best model: lowest AICc among those passing Ljung-Box
+  AICc_ok <- AICc
+  # Blank any AICc values matching the matrix locations where
+  # LBp <= 0.05 
+  AICc_ok[LBp <= 0.05 | is.na(LBp)] <- NA 
+  
+  if (all(is.na(AICc_ok))) {
+    cat("No model passed Ljung-Box for:", s, "\n")
+    next
+  }
+  
+  best <- which(AICc_ok == min(AICc_ok, na.rm = TRUE), arr.ind = TRUE)
+  p_best <- best[1, 1] - 1
+  q_best <- best[1, 2] - 1
+  model  <- models[[paste(p_best, q_best)]]
+  
+  # Forecast future quarters, with intervals, and convert back to dollars
+  fc <- forecast(model, xreg = X_future, h = hmax)
+  forecasts <- ts(exp(as.numeric(fc$mean)),       start = c(2025, 4), frequency = 4)
+  
+  # 95% Interval assuming normality
+  lower95   <- ts(exp(as.numeric(fc$lower[, 2])), start = c(2025, 4), frequency = 4)
+  upper95   <- ts(exp(as.numeric(fc$upper[, 2])), start = c(2025, 4), frequency = 4)
+ 
+  
+  return(list(
+   suburb      = s,
+    Y           = Y,
+    Y_train     = Y[t_est],
+    model       = model,
+    trend_break = b,
+    nd          = nd,
+    p           = p_best,
+    q           = q_best, 
+    AICc        = AICc,
+    forecasts   = forecasts,
+    lower95     = lower95,
+    upper95     = upper95
+  ))
+  
+}
+
+cl <- makeCluster(n_cores)
+clusterSetRNGStream(cl, 123)
+clusterEvalQ(cl, {
+  library(forecast)
+  library(urca)
+})
+clusterExport(cl, c("dt", "get_suburb", "trend_breaks", "trend_break",
+                    "simulate_adf_cv", "adf_test", "fit_arima"))
+
+results_future <- parLapplyLB(cl, dt$Suburb, fit_suburb_future)
+stopCluster(cl)
+names(results_future) <- dt$Suburb
+```
+
+Once again, check to see if any models have failed to be fit.
+
+```{r}
+for (s in names(results_future)) {
+  r   <- results_future[[s]]
+  idx <- which(is.na(r$AICc), arr.ind = TRUE)   # row/col positions of NAs
+  
+  for (i in seq_len(nrow(idx))) {
+    p <- idx[i, "row"] - 1                       # row 1 = p=0
+    q <- idx[i, "col"] - 1                       # col 1 = q=0
+    cat("Fit failed:", s, "ARIMA(", p, ",", r$nd, ",", q, ")\n")
+  }
+}
+```
+
+And once more, some models fail to fit. This is not too concerning as per the rationale described in part B.
+
+## Visualising Our Results
+
+Again, lets print out some metrics to better understand our data and how the p,q and d values are distributed
+
+```{r}
+# How many of each number of differencing was required
+cat("d values")
+table(sapply(results_future, function(r) r$nd)) 
+cat("\n")
+
+# How many of each p-value appeared during modelling (missing = 0)
+cat("p values")
+table(sapply(results_future, function(r) r$p))
+cat("\n")
+
+# How many of each q-value appeared during modelling (missing = 0)
+cat("q values")
+table(sapply(results_future, function(r) r$q))
+```
+
+**NOTE**: Here with full access to the data and previously with limited access to the data, we find that there are a handful of suburbs that use the max q-lag length, which means it isn't necessarily clear if our max lag length of 9 is an under specification. However, this is not too concerning as there are 2 years worth of lags +1 available which should be plenty to sufficiently capture yearly patterns within quarterly data.
+
+Lets also define a function that will plot the forecasts 6 years into the future.
+
+```{r}
+plot_future <- function(s) {
+  r <- results_future[[s]]
+  
+  fc    <- r$forecasts
+  lower <- r$lower95
+  upper <- r$upper95
+  tt    <- as.numeric(time(fc))
+  
+  plot(fc, ylim = range(lower, upper, na.rm = TRUE), type = "n",
+       main = paste(s, "- forecast, ARIMA(", r$p, ",", r$nd, ",", r$q, ")"),
+       ylab = "Median prices", xlab = "Time")
+  polygon(c(tt, rev(tt)), c(as.numeric(lower), rev(as.numeric(upper))),
+          col = adjustcolor("red", 0.15), border = NA)
+  lines(fc,    col = "red", lwd = 2)
+  lines(lower, col = "red", lty = 2)
+  lines(upper, col = "red", lty = 2)
+  
+  legend("topleft", c("Forecast", "95% interval"),
+         col = "red", lty = c(1, 2), lwd = c(2, 1), bty = "n", cex = 0.8)
+}
+```
+
+Now, lets visualize a few suburb forecasts which were chosen in Part B for comparison. We also included one suburb that required zero differencing as well as few that only required one (the only two number of differences used in the full data set) to visualize how their forecasting shapes differ.
+
+```{r}
+nd_vals <- sapply(results_future, function(r) r$nd)
+
+(s0 <- names(nd_vals)[nd_vals == 0][1])
+(s1 <- names(nd_vals)[nd_vals == 1][1])
+
+
+# Plot some suburbs of interest from Part B. Note: The proceeding comments 
+# detail information about the suburbs concluded from part B.
+
+plot_future("Echuca")                                # Zero differences
+plot_future("Albert Park-Middle Park-West St Kilda") # One Difference 
+
+
+plot_future("Brighton East")                         # Most Accurate Suburb 
+plot_future("North Bendigo")                         # Least Accurate Suburb
+```
+
+## Looking Into Growth Rates
+
+Now, the main purpose of this modelling is to answer one question: What are the top 10 suburbs with the highest predicted growth rate?
+
+So, lets begin investigating. Firstly, lets create a histogram of how growth rates are distributed over our data after the 6 year forecasts. This will be calculated using the following formula:
+
+$$
+Growth \space Rate (\%) = \frac{forecast - current}{current}\times100 = (\frac{forecast_{sep 2031}}{forecast_{sep2026}}-1)\times100
+$$ **NOTE**: Since we are interested in the top 10 suburbs with the highest growth rate in 5 years time, we need to calculate growth rates based off of our 2026 forecast.
+
+```{r}
+h_base <- 4     # Sep 2026 (2026Q3), the 4th forecast quarter
+h      <- 24    # Sep 2031 (2031Q3), the end of the forecasts
+
+growth <- sapply(results_future, function(r) {
+  base     <- as.numeric(r$forecasts[h_base])   # forecast rent, Sep 2026
+  forecast <- as.numeric(r$forecasts[h])        # forecast rent, Sep 2031
+  forecast / base - 1
+})
+
+summary(100 * growth)
+
+hist(100 * growth, breaks = 30, col = "grey80",
+     main = "Forecast 5-year rent growth, Sep 2026 to Sep 2031 \n (Using a forecasted 2026)",
+     xlab = "Growth rate (%)", ylab = "Number of suburbs")
+abline(v = 100 * median(growth), col = "red", lwd = 2)
+abline(v = 0, lty = 2)
+legend("topright",
+       legend = c(paste0("Median (", round(100 * median(growth), 1), "%)"), "Zero growth"),
+       col = c("red", "black"), lty = c(1, 2), lwd = c(2, 1), bty = "n", cex = 0.8)
+```
+
+Now, to find the highest growth forecasted growth rates after 5 years (6 years of actual forecasting) we will sort our data by growth rate and pick the 10 highest cases.
+
+```{r}
+h_base <- 4     # Sep 2026 (2026Q3), the 4th forecast quarter
+h      <- 24    # Sep 2031 (2031Q3)
+
+growth <- sapply(results_future, function(r) {
+  base     <- as.numeric(r$forecasts[h_base])   # forecast rent, Sep 2026
+  forecast <- as.numeric(r$forecasts[h])        # forecast rent, Sep 2031
+  forecast / base - 1
+})
+
+top10     <- sort(growth, decreasing = TRUE)[1:10]
+top_names <- names(top10)
+
+top_tab <- data.frame(
+  Suburb    = top_names,
+  Base      = sapply(results_future[top_names], function(r) as.numeric(r$forecasts[h_base])),
+  Forecast  = sapply(results_future[top_names], function(r) as.numeric(r$forecasts[h])),
+  Growth    = 100 * top10,
+  row.names = NULL
+)
+
+kable(top_tab, digits = 1,
+      col.names = c("Suburb", "Sep 2026 forecast (\\$/week)", "Sep 2031 forecast (\\$/week)", "Growth (%)"),
+      caption = "Top 10 suburbs by forecasted 5-year rent growth, Sep 2026 to Sep 2031")
+```
+
+For breadth of analysis, lets do this for the top 10 lowest aswell.
+
+```{r}
+bottom10     <- sort(growth, decreasing = FALSE)[1:10]
+bottom_names <- names(bottom10)
+
+bottom_tab <- data.frame(
+  Suburb    = bottom_names,
+  Base      = sapply(results_future[bottom_names], function(r) as.numeric(r$forecasts[h_base])),
+  Forecast  = sapply(results_future[bottom_names], function(r) as.numeric(r$forecasts[h])),
+  Growth    = 100 * bottom10,
+  row.names = NULL
+)
+
+kable(bottom_tab, digits = 1,
+      col.names = c("Suburb", "Sep 2026 forecast (\\$/week)", "Sep 2031 forecast (\\$/week)", "Growth (%)"),
+      caption = "Bottom 10 suburbs by forecasted 5-year rent growth, Sep 2026 to Sep 2031")
+```
+
+Lets also include the top 10 forecasted growth rates for 2027, 2028, 2029, 2030 and 2031 where current remains at 2026Q3. We also will include the growth rate from 2025Q3 to 2026Q3 for reference.
+
+```{r}
+#| results: asis
+current <- sapply(results_future, function(r) exp(as.numeric(tail(r$Y, 1))))   # actual, Sep 2025
+base    <- sapply(results_future, function(r) as.numeric(r$forecasts[4]))       # forecast, Sep 2026
+
+# Build and print a top-10 table for growth from `start` to `end`
+top10_growth <- function(start, end, period, start_label, end_label) {
+  g  <- end / start - 1
+  t10 <- sort(g, decreasing = TRUE)[1:10]
+  nm <- names(t10)
+  
+  tab <- data.frame(
+    Period   = period,
+    Rank     = 1:10,
+    Suburb   = nm,
+    Start    = start[nm],
+    End      = end[nm],
+    Growth   = 100 * t10,
+    row.names = NULL
+  )
+  
+  print(kable(tab[, -1], digits = 1,
+              col.names = c("Rank", "Suburb", paste(start_label, "(\\$/week)"),
+                            paste(end_label, "(\\$/week)"), "Growth (%)"),
+              caption = paste("Top 10 suburbs by rent growth,", period)))
+  tab
+}
+
+top_by_year <- list()
+
+# Sep 2025 (last actual) to Sep 2026 (forecast)
+top_by_year[["2026"]] <- top10_growth(current, base, "Sep 2025 to Sep 2026",
+                                      "Sep 2025 actual", "Sep 2026 forecast")
+
+# Sep 2026 (forecast) to Sep 2027 ... Sep 2031 (forecast)
+for (yr in 2027:2031) {
+  hh   <- (yr - 2025) * 4                  # Sep 2027 = h 8, ..., Sep 2031 = h 24
+  fc_h <- sapply(results_future, function(r) as.numeric(r$forecasts[hh]))
+  
+  top_by_year[[as.character(yr)]] <- top10_growth(base, fc_h, paste("Sep 2026 to Sep", yr),
+                                                  "Sep 2026 forecast", paste("Sep", yr, "forecast"))
+}
+
+top_all <- do.call(rbind, top_by_year)
+top_out <- top_all
+top_out[, c("Start", "End", "Growth")] <- round(top_out[, c("Start", "End", "Growth")], 1)
+write.csv(top_out, "top10_growth_by_year.csv", row.names = FALSE)
+```
+
+```{r}
+plot_future("Keilor")    # Highest growth rate
+
+plot_future("Southbank") # Lowest growth rate (which is negative)
+
+```
+
+```{r}
+rent_2026_jun <- data.frame(
+  Suburb        = names(results_future),
+  Forecast_Jun2026 = sapply(results_future, function(r) as.numeric(r$forecasts[3]))
+)
+
+write.csv(rent_2026_jun, "2026_rents_forecast_EOFY.csv", row.names = FALSE)
+```

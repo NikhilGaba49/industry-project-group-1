@@ -168,7 +168,7 @@ Run these **after** all the Python notebooks above. Set up the R environment fir
 
 Then render the following files from `R_Markdown_Files/`:
 
-- `Suburb Rent Price Modelling/Modelling_rent.qmd` (render with Quarto). Rendering produces `Modelling_rent.html` and `Modelling Rent.pdf` in the same folder; these are only created if the file is rendered, not if the code chunks are just run. It also produces `top10_growth_by_year.csv`.
+- `Suburb Rent Price Modelling/Modelling_rent_windows.qmd` (render with Quarto). Rendering produces `Modelling_rent.html` and `Modelling Rent.pdf` in the same folder; these are only created if the file is rendered, not if the code chunks are just run. It also produces `top10_growth_by_year.csv`.
 - `Weekly_Rent_Explanatory_Model_v5.Rmd` (knit in RStudio or with `rmarkdown::render()`)
 
 `v5` is the only version of the explanatory model kept in the repository.
@@ -232,7 +232,8 @@ industry-project-group-1/
 │   └── Rental_Listings_Visual.ipynb
 ├── R_Markdown_Files/
 │   ├── Suburb Rent Price Modelling/
-│   │   ├── Modelling_rent.qmd
+│   │   ├── Modelling_rent_mac.qmd
+|   |   ├── Modelling_rent_windows.qmd
 │   │   └── rent_by_qtr_suburb_refactored.csv
 │   └── Weekly_Rent_Explanatory_Model_v5.Rmd
 ├── rea_data/                       # provided data, plus landing/domain/ (steps 2-3)

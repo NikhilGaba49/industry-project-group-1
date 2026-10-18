@@ -164,7 +164,7 @@ Run all of them (any order), including:
 
 Run these **after** all the Python notebooks above. Set up the R environment first (see [R Dependencies](#r-dependencies)).
 
-**Copy the forecasting input first.** `Modelling_rent.qmd` reads `rent_by_qtr_suburb_refactored.csv`, which is the output of `refactoring_historical_rent_data.ipynb` (step 6b). Copy that file into the `R_Markdown_Files/Suburb Rent Price Modelling/` folder, next to the `.qmd`.
+**Copy the forecasting input first.** `Modelling_rent_mac.qmd` or `Modelling_rent_windows.qmd` reads `rent_by_qtr_suburb_refactored.csv`, which is the output of `refactoring_historical_rent_data.ipynb` (step 6b). Copy that file into the `R_Markdown_Files/Suburb Rent Price Modelling/` folder, next to the `.qmd`.
 
 Then render the following files from `R_Markdown_Files/`:
 

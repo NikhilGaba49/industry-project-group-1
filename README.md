@@ -141,6 +141,8 @@ Run **every cell** of each notebook, in the exact order below. Complete one fold
 5. `overpass_querying.ipynb` (queries OpenStreetMap, no API key needed)
 6. `proximities_facilities.ipynb` (uses the ORS API: **see [ORS API Quota](#ors-api-quota) first, as this takes several days**)
 
+**Note:** `proximities_facilities.ipynb` may encounter API quota errors during execution. Since results are cached, you can safely rerun the failed cell to resume processing. If the daily API quota has been exhausted, wait 24 hours before retrying.
+
 **6d. `Merging_data/`** (in this order)
 
 1. `Merging_crime_1.ipynb`
